@@ -1,0 +1,13 @@
+local/
+runtime/
+firmware/
+.venv*/
+__pycache__/
+*.py[cod]
+.DS_Store
+*.bin
+*.cfg
+*.partial
+*.log
+*.whl
+.env*
