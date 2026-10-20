@@ -5,7 +5,7 @@ No arbitrary input filenames, offsets, chip types, or modified-image mode.
 """
 from contextlib import contextmanager
 from pathlib import Path
-import datetime,hashlib,json,os,shutil,time
+import datetime,hashlib,json,os,shutil,sys,time
 import u15l_backup
 from u15l_noop_flow import frame,PREAMBLE
 from u15l_recovery_package import make_restore_package,ORIGINAL_SHA,START,SIZE
@@ -152,14 +152,16 @@ def main():
         state['changed_64KiB_blocks']=[hex(i)for i in range(0,len(after),0x10000)if before[i:i+0x10000]!=after[i:i+0x10000]]
         log('restore_verified')
         print('原版恢复成功：写入范围两遍读回一致，并与原版逐字节相同；受保护区域未改变。',flush=True)
+        return 0
     except Exception as exc:
         state['error']=str(exc);log('stopped',reason=str(exc))
         print('程序停止：'+str(exc),flush=True)
         if state['flash_write_may_have_started']:
             print('写入阶段已经开始过；请保留本记录。此程序可在重新上电后再次恢复同一原版区间。',flush=True)
+        return 1
     finally:
         log('finished',time=datetime.datetime.now().astimezone().isoformat())
         print('记录位置：'+str(report),flush=True)
         print('结束后拔下再插入，让设备正常启动。',flush=True)
 
-if __name__=='__main__':main()
+if __name__=='__main__':sys.exit(main())

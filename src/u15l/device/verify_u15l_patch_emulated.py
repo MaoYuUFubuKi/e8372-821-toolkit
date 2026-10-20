@@ -3,7 +3,7 @@ from pathlib import Path
 import hashlib, json, random, struct
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM, UC_MODE_THUMB, UC_HOOK_CODE
 from unicorn.arm_const import *
-from build_u15l_patch_offline import ROOT, BACKUPS, OUT, EXPECTED, LOAD, ENTRY, WINDOW_START, WINDOW_END
+from build_u15l_patch_offline import ROOT, BACKUPS, OUT, EXPECTED, LOAD, ENTRY, WINDOW_START, WINDOW_END, PROFILE
 from u15l_noop_package import make_noop_package
 
 REGS = [UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3,
@@ -35,39 +35,67 @@ def patch_abi(patched):
         results.append(seed)
     return {'random_register_cases':len(results),'return':1,'registers_and_stack_preserved':True}
 
-def task_case(code, forced_response, dedicated_url):
+def task_case(code, forced_response, dedicated_url, slot=1, ready_returns=None,
+              expect_complete=True):
+    addresses=PROFILE['emulation']
+    variant=addresses['variant']
     uc=Uc(UC_ARCH_ARM,UC_MODE_THUMB)
     uc.mem_map(0x06000000,0x01100000)
     uc.mem_write(LOAD,code)
     uc.reg_write(UC_ARM_REG_SP,0x070f0000)
     uc.reg_write(UC_ARM_REG_LR,0x07000001)
-    # Actual task's literal pointer; populate only its URL-selection fixture.
-    sl=u32(code,0x0690afe8-LOAD)
-    uc.mem_write(sl+0x14,p32(0x06b162bb if dedicated_url else 0))
-    cfg=[]; disconnected=[]; callsites=[]
+    # Execute the actual task; external system calls and URL state are fixtures.
+    sl=u32(code,addresses['url_selection_literal']-LOAD)
+    if variant=='l01':
+        uc.mem_write(sl+0x14,p32(addresses['dedicated_url'] if dedicated_url else 0))
+    elif variant=='m02':
+        fixture_url=0x07010000
+        uc.mem_write(fixture_url,b'http://fixture.invalid/check\0')
+        for index in (0,1):
+            uc.mem_write(sl+addresses['url_table_offset']+index*4,
+                         p32(fixture_url if dedicated_url else 0))
+    else:
+        raise AssertionError('Unsupported task emulator profile')
+    cfg=[]; disconnected=[]; callsites=[]; delays=[]; responses=[]
+    pending=list(forced_response) if isinstance(forced_response,(list,tuple)) else None
+    readiness=list(ready_returns or [1])
     def cstr(addr):return bytes(uc.mem_read(addr,96)).split(b'\0')[0].decode(errors='replace')
     def hook(u,addr,size,_):
-        if addr in (0x0690af00,0x0690af0a): callsites.append(hex(addr))
+        if addr in addresses['callsites']: callsites.append(hex(addr))
         ret=None
-        if addr==ENTRY and forced_response is not None:ret=forced_response
-        elif addr==0x0699ac68:ret=0 # delay
-        elif addr==0x0696b2ec: # original memset-like startup helper
+        if addr==ENTRY and forced_response is not None:
+            if pending is not None:
+                assert pending, 'Unexpected extra request'
+                ret=pending.pop(0)
+            else:
+                ret=forced_response
+            responses.append(ret)
+        elif addr==addresses['delay']:
+            delays.append(u.reg_read(UC_ARM_REG_R0));ret=0
+        elif addr==addresses['memset']:
             u.mem_write(u.reg_read(UC_ARM_REG_R0),bytes(u.reg_read(UC_ARM_REG_R1)));ret=0
-        elif addr==0x066d3894:
+        elif addr==addresses['configuration']:
             cfg.append([cstr(u.reg_read(r)) for r in (UC_ARM_REG_R0,UC_ARM_REG_R2,UC_ARM_REG_R3)]);ret=0
-        elif addr in (0x069a26b8,0x066d3ce8):ret=1 # selected slot / readiness
-        elif addr==0x0699d68c:ret=0 # logging
-        elif addr==0x0663db14:disconnected.append(True);ret=0
+        elif addr==addresses['readiness'][0]:ret=slot
+        elif addr==addresses['readiness'][1]:
+            ret=readiness.pop(0) if len(readiness)>1 else readiness[0]
+        elif addr==addresses['logging']:ret=0
+        elif addr==addresses['disconnect']:disconnected.append(True);ret=0
         if ret is not None:
             u.reg_write(UC_ARM_REG_R0,ret&0xffffffff)
             u.reg_write(UC_ARM_REG_PC,u.reg_read(UC_ARM_REG_LR))
-        elif not (0x0690ae52<=addr<0x0690af7a or ENTRY<=addr<ENTRY+4):
+        elif not (addresses['task_start']<=addr<addresses['task_end'] or ENTRY<=addr<ENTRY+4
+                  or (variant=='m02' and slot is None
+                      and addresses['readiness'][0]<=addr<addresses['readiness'][0]+4)):
             raise AssertionError(f'Unexpected execution {addr:x}')
     uc.hook_add(UC_HOOK_CODE,hook)
-    uc.emu_start(0x0690ae53,0x07000000,count=2000)
-    assert uc.reg_read(UC_ARM_REG_PC)==0x07000000
-    deny=u32(uc.mem_read(0x06b72d1c,4))
-    return {'deny_flag':deny,'configuration_calls':cfg,'disconnect_calls':len(disconnected),'callsites':callsites}
+    uc.emu_start(addresses['task_start']|1,0x07000000,count=2000)
+    completed=uc.reg_read(UC_ARM_REG_PC)==0x07000000
+    assert completed==expect_complete
+    if pending is not None:assert not pending
+    deny=u32(uc.mem_read(addresses['deny_flag'],4))
+    return {'deny_flag':deny,'configuration_calls':cfg,'disconnect_calls':len(disconnected),
+            'callsites':callsites,'delays':delays,'responses':responses,'completed':completed}
 
 def make_fbf(payload):
     # A fixture for the original OBM parser, not a USB download package.
@@ -150,7 +178,14 @@ def main():
     assert sha(original)==EXPECTED
     plain=(ROOT/'work/research/u15l-decompressed-481000.bin').read_bytes()
     patched=(ROOT/'work/research/u15l-code-pl-patched.bin').read_bytes()
-    result={'scope':'Offline emulation only. USB transport, real flash and boot are not tested.'}
+    assert len(plain)==PROFILE['plain_bytes'] and sha(plain)==PROFILE['plain_sha256']
+    expected_patched=bytearray(plain)
+    offset=PROFILE['patch_offset']
+    assert plain[offset:offset+4].hex()==PROFILE['patch_original_hex']
+    expected_patched[offset:offset+4]=bytes.fromhex(PROFILE['patch_replacement_hex'])
+    assert patched==expected_patched
+    result={'scope':'Offline emulation only. USB transport, real flash and boot are not tested.',
+            'firmware_profile':PROFILE['id'],'firmware':PROFILE['firmware']}
     tim,noop=make_noop_package()
     flash=bytearray(original)
     result['obm_noop_full_metadata_parse']=run_obm(flash,noop,tim=tim)
@@ -162,10 +197,34 @@ def main():
     assert result['task_original_reject']['deny_flag']==1 and result['task_original_reject']['disconnect_calls']==1
     result['task_original_accept']=task_case(plain,1,True)
     result['task_patched_dedicated_url']=task_case(patched,None,True)
-    result['task_patched_fallback_url']=task_case(patched,None,False)
-    assert result['task_patched_dedicated_url']['callsites']==['0x690af00']
-    assert result['task_patched_fallback_url']['callsites']==['0x690af0a']
-    for key in ('task_original_accept','task_patched_dedicated_url','task_patched_fallback_url'):
+    accepted=['task_original_accept','task_patched_dedicated_url']
+    if PROFILE['emulation']['variant']=='l01':
+        result['task_patched_fallback_url']=task_case(patched,None,False)
+        assert result['task_patched_dedicated_url']['callsites']==['0x690af00']
+        assert result['task_patched_fallback_url']['callsites']==['0x690af0a']
+        accepted.append('task_patched_fallback_url')
+    else:
+        assert result['task_original_reject']['configuration_calls']==[
+            ['misc','sim_not_match','0'],['misc','sim_not_match','1'],
+            ['wan','connect_disconnect','disabled']]
+        for key,response,slot,ready in (
+            ('task_original_missing_id_retry',[-1,1],1,None),
+            ('task_original_missing_response_retry',[-2,1],1,None),
+            ('task_original_wait_ready',1,1,[0,1]),
+            ('task_patched_real_slot_helper',None,None,None)):
+            result[key]=task_case(patched if response is None else plain,response,True,slot,ready)
+            accepted.append(key)
+        assert result['task_original_missing_id_retry']['delays']==[1000,1000,2000]
+        assert result['task_original_missing_response_retry']['delays']==[1000,1000,6000]
+        assert result['task_patched_dedicated_url']['callsites']==['0x690aeee']
+        assert result['task_patched_real_slot_helper']['callsites']==['0x690aeee']
+        result['task_missing_url']=task_case(plain,1,False,expect_complete=False)
+        assert not result['task_missing_url']['callsites'] and result['task_missing_url']['disconnect_calls']==0
+        for slot in (0,2,3):
+            key=f'task_invalid_slot_{slot}'
+            result[key]=task_case(plain,1,True,slot)
+            assert not result[key]['callsites'] and result[key]['disconnect_calls']==0
+    for key in accepted:
         assert result[key]['deny_flag']==0 and result[key]['disconnect_calls']==0
         assert result[key]['configuration_calls']==[['misc','sim_not_match','0']]
     old=original[WINDOW_START:WINDOW_END]

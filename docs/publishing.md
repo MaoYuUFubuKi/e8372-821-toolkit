@@ -10,18 +10,14 @@ python3 scripts/package_release.py
 
 ## 照片待作者打码
 
-照片仅移除了 EXIF/XMP/IPTC 元数据，画面保持原样。作者已要求自行处理可见信息：
+`assets/photos/manifest.json` 记录现有配图的文件哈希。`redacted: false` 表示尚未确认画面中的敏感信息已处理，发布图片前由作者检查：
 
 | 文件 | 需要检查的内容 |
 | --- | --- |
-| `01-board-sim-side.jpg` | 板上二维码与序列号 |
-| `02-board-shield-side.jpg` | 屏蔽罩二维码 |
-| `03-case-label.jpg` | Wi-Fi 密码、管理密码、序列号、IMEI、二维码及 SSID |
-| `04-asr1803-board.jpg` | 拆下的屏蔽罩二维码 |
-| `05-chip-closeup.jpg` | 背景与标识 |
-| `06-success-blue-led.jpg` | 背景 |
+| `asr1803-board.jpg` | 主板、屏蔽罩上的二维码与序列号 |
+| `success-blue-led.jpg` | 背景与可见标识 |
 
-打码后更新 `assets/photos/manifest.json` 中相应文件的 SHA-256、`redacted` 与 `pixels_unchanged`，再重新打包。不把未打码的原图附在公开发行里。
+打码后更新清单中的 SHA-256、`redacted` 与 `pixels_unchanged`，再重新打包。不把未打码的原图附在公开发行里。
 
 ## 授权与依赖
 

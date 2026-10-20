@@ -22,12 +22,14 @@ from u15l_restore_flow import transfer_restore
 from u15l_candidate_package import make_candidate_package, CANDIDATE_SHA
 from u15l_candidate_flow import transfer_candidate
 from u15l_install_flow import install, verify_image, PROTECTED
+from firmware_profile import require_profile
 
 BUNDLE_MANIFEST_SHA = '__BUNDLE_MANIFEST_SHA__'
 ARCHIVE_SHA = '__ARCHIVE_SHA__'
 def sha(data): return hashlib.sha256(data).hexdigest()
 
 def preflight():
+    profile = require_profile()
     originals = [(BACKUPS/f'original-copy{i}.bin').read_bytes() for i in (1, 2)]
     if originals[0] != originals[1] or sha(originals[0]) != SOURCE_SHA:
         raise RuntimeError('两份原机备份校验失败。')
@@ -39,16 +41,25 @@ def preflight():
     make_candidate_package(candidate, old)
     # Confirm the exact four-byte instruction change again before hardware use.
     def unpack(data):
+        if data[0x1000:0x100d].hex() != profile['compressed_header_hex']:
+            raise RuntimeError('固件压缩头与所选版本不符。')
         decoder = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
-        plain = decoder.decompress(data[0x1000:0x137000])
-        if not decoder.eof or len(plain) != 0x294fb4:
+        plain = decoder.decompress(data[0x1000:0x137000], max_length=profile['plain_bytes']+1)
+        if not decoder.eof or len(plain) != profile['plain_bytes']:
             raise RuntimeError('固件压缩流不完整。')
         return plain
     a, b = unpack(old), unpack(candidate)
+    if sha(a) != profile['plain_sha256']:
+        raise RuntimeError('原版程序指纹与所选版本不符。')
     expected = bytearray(a)
-    if a[0x88cfa:0x88cfe] != bytes.fromhex('2de9f043'):
+    offset = profile['patch_offset']
+    original_bytes = bytes.fromhex(profile['patch_original_hex'])
+    replacement = bytes.fromhex(profile['patch_replacement_hex'])
+    if len(original_bytes) != 4 or len(replacement) != 4:
+        raise RuntimeError('只允许经核验的四字节修改。')
+    if a[offset:offset+4] != original_bytes:
         raise RuntimeError('原版函数入口不符。')
-    expected[0x88cfa:0x88cfe] = bytes.fromhex('01207047')
+    expected[offset:offset+4] = replacement
     if b != expected or candidate[:0x1000] != old[:0x1000] or candidate[0x137000:] != old[0x137000:]:
         raise RuntimeError('修改范围超出固定候选。')
     bundle = ROOT/'recovery'
@@ -86,6 +97,8 @@ def main():
     report = OUT/(stem+'.json')
     state = {'started': datetime.datetime.now().astimezone().isoformat(), 'events': [],
              'mode': 'restore_verified_then_fixed_candidate',
+             'firmware_profile': require_profile()['id'],
+             'firmware': require_profile()['firmware'],
              'original_restore_verified': False, 'candidate_readback_verified': False,
              'candidate_write_may_have_started': False, 'rollback_after_error_verified': False,
              'device_boot_verified': False, 'own_sim_internet_verified': False}

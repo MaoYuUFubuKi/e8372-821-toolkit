@@ -1,15 +1,17 @@
 """Project paths and private per-device workspaces; never embed a donor image."""
 from pathlib import Path
 import datetime, hashlib, json, os, re, sys
+from .profiles import L01
 ROOT=Path(__file__).resolve().parents[2]
 ENGINE=Path(__file__).resolve().parent/'device'
 RUNTIME=ROOT/'runtime'
 sys.path[:0]=[str(RUNTIME/'python'),str(ENGINE)]
-PROFILE='u15l-c01-mt02b01v15-l01'
-BOARD='8BC010-U15L_V1.03'
-SOC='ASR1803S'
-FIRMWARE='U15L-MT02B01V15-L01'
-SOURCE_PLAIN_SHA='e42836f86fdcef5c1ab13061efa0429c9f9ee4c7e4f4daf2ec7b47a85d7c2daf'
+# Compatibility aliases for callers of the original L01-only public API.
+PROFILE=L01.id
+BOARD=L01.board
+SOC=L01.soc
+FIRMWARE=L01.firmware
+SOURCE_PLAIN_SHA=L01.plain_sha256
 OBM_SHA='34a56247fa26e5c359930e43fef76ce30f5b95d2ce8ddd3f3fafcdab87f2e9f4'
 PREFIX_SHA='a03e30e27c254666ea35881a25096723c38f3087eb8b40d230d6ea892f93b78f'
 START,END=0x480000,0x5c0000

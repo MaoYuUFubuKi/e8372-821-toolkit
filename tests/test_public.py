@@ -1,12 +1,13 @@
 """No USB device is opened; private original images are not required."""
 from pathlib import Path
-import struct,sys,unittest
+import dataclasses,os,struct,subprocess,sys,tempfile,unittest
 from unittest.mock import patch as mock_patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'src'),str(ROOT/'src/u15l/device'),str(ROOT/'tests/flows')]
 from u15l.common import case_path
-from u15l.prepare import unpack,prepare,select_candidate
+from u15l.prepare import unpack,prepare,select_candidate,launcher
 from u15l.fixed import load_fixed,validate_payload,FILENAME,PAYLOAD_SHA
+from u15l.profiles import L01,M02,get_profile,require_profile
 from u15l_noop_package import make_noop_package
 from u15l_recovery_package import make_restore_package,START,SIZE
 from u15l_candidate_package import make_candidate_package
@@ -14,6 +15,50 @@ from u15l_install_flow import install,verify_image
 from check_noop_flow_offline import case as noop_case
 
 class PublicChecks(unittest.TestCase):
+    def test_profiles_are_exact_and_cannot_be_overridden(self):
+        for profile in (L01,M02):
+            self.assertIs(get_profile(profile.board,profile.soc,profile.firmware),profile)
+            with self.assertRaises(RuntimeError):get_profile('other',profile.soc,profile.firmware)
+            with self.assertRaises(RuntimeError):require_profile(dataclasses.replace(profile,patch_offset=0))
+            with self.assertRaises(dataclasses.FrozenInstanceError):profile.patch_offset=0
+            with self.assertRaises(TypeError):profile.emulation['variant']='other'
+        with self.assertRaises(RuntimeError):get_profile(L01.board,L01.soc,'U15L-MT02B01V15-M03')
+        self.assertIs(require_profile(),L01)
+    def test_m02_never_uses_l01_fixed_component(self):
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name);(root/'firmware').mkdir()
+            (root/'firmware'/FILENAME).write_bytes(b'broken L01 component')
+            self.assertIsNone(load_fixed(root,profile=M02))
+        with self.assertRaises(RuntimeError):validate_payload(b'',profile=M02)
+        with mock_patch('u15l.prepare.unpack',return_value=(b'',b'')),mock_patch('u15l.prepare.patch') as local:
+            with self.assertRaises(RuntimeError):select_candidate(b'','fixed',profile=M02)
+            local.assert_not_called()
+    def test_unrendered_profile_cannot_authorize_writing(self):
+        import firmware_profile
+        with self.assertRaises(RuntimeError):firmware_profile.require_profile()
+    def test_restore_failure_returns_nonzero_without_device_access(self):
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name);device=root/'work/device';device.mkdir(parents=True)
+            (root/'outputs/firmware').mkdir(parents=True)
+            script=device/'restore_u15l_original.py'
+            script.write_text((ROOT/'src/u15l/device/restore_u15l_original.py').read_text())
+            result=subprocess.run([sys.executable,str(script)],cwd=root,
+                env=dict(os.environ,PYTHONPATH=str(ROOT/'src/u15l/device')),
+                capture_output=True,text=True)
+            self.assertEqual(result.returncode,1,result.stderr)
+            self.assertIn('程序停止',result.stdout)
+            self.assertNotIn('程序已就绪',result.stdout)
+    @unittest.skipUnless(Path('/bin/zsh').is_file(),'macOS launcher requires zsh')
+    def test_launcher_preserves_python_exit_status(self):
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name)
+            for status in (0,7):
+                with self.subTest(status=status):
+                    (root/'fixture.py').write_text(f'import sys\nsys.exit({status})\n')
+                    launcher(root/'run.command','./fixture.py')
+                    result=subprocess.run(['/bin/zsh',str(root/'run.command')],input='\n',
+                        env=dict(os.environ,U15L_PYTHON=sys.executable),capture_output=True,text=True)
+                    self.assertEqual(result.returncode,status,result.stderr)
     def test_fixed_component_integrity_and_corruption(self):
         payload=load_fixed()
         if payload is None:self.skipTest('Source-only distribution')

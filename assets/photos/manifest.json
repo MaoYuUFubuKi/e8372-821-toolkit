@@ -1,0 +1,14 @@
+[
+  {
+    "file": "asr1803-board.jpg",
+    "sha256": "8b094787da6882b840ace6cc16cb8751285b6f4b15fd9d3e6d44828a73d8640c",
+    "redacted": false,
+    "pixels_unchanged": true
+  },
+  {
+    "file": "success-blue-led.jpg",
+    "sha256": "f5b02c92f205f41119243c840c8c2520449d0e6a55b94a490f0c3d7d774f97cd",
+    "redacted": false,
+    "pixels_unchanged": true
+  }
+]

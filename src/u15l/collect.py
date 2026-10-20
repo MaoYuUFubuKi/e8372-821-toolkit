@@ -54,13 +54,13 @@ def collect(name,mirror=False):
         blobs=[p.read_bytes() for p in copies]
         if blobs[0]!=blobs[1] or len(blobs[0])!=0x1000000:raise RuntimeError('备份不一致。')
         for p in copies:p.chmod(0o400)
-        result={'profile':'u15l-c01-mt02b01v15-l01','captured_at':now(),
+        result={'profile':None,'hardware_profile':'u15l-asr1803s-16mib','captured_at':now(),
                 'copies':[str(p.relative_to(case)) for p in copies],'source_sha256':sha(blobs[0]),
                 'bytes_per_copy':0x1000000,'metadata_noop':probe,
                 'physical_port':port,'mirror_test':mirror,'otp_included':False}
         save_json(case/'backup.json',result)
         record.log('complete',source_sha256=result['source_sha256'])
         print('自己的两份主闪存备份一致，恢复通道和报告容量已匹配。请重新拔插让设备正常启动。')
-        print('下一步：./run.sh prepare '+name+' --board 8BC010-U15L_V1.03 --soc ASR1803S --firmware U15L-MT02B01V15-L01')
+        print('下一步：核对管理页固件版本，再运行 ./run.sh prepare '+name+' --board 8BC010-U15L_V1.03 --soc ASR1803S --firmware <实际完整版本>')
     except Exception as e:
         record.log('stopped',error=str(e));raise
