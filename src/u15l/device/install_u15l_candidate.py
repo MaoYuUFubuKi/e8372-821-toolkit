@@ -4,14 +4,17 @@ The independent original recovery bundle is unchanged. Five fresh USB sessions
 are necessary because the read and download protocols use separate boot sessions.
 """
 import datetime
-import fcntl
+import sys
+if sys.platform == 'win32':
+    import msvcrt
+else:
+    import fcntl
 import hashlib
 import json
 import lzma
 import os
 from pathlib import Path
 import shutil
-import sys
 
 from restore_u15l_original import (
     ROOT, OUT, BACKUPS, SOURCE_SHA, READ_POLICY, session, acquire, write_policy,
@@ -43,9 +46,22 @@ def preflight():
     def unpack(data):
         if data[0x1000:0x100d].hex() != profile['compressed_header_hex']:
             raise RuntimeError('固件压缩头与所选版本不符。')
-        decoder = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
-        plain = decoder.decompress(data[0x1000:0x137000], max_length=profile['plain_bytes']+1)
-        if not decoder.eof or len(plain) != profile['plain_bytes']:
+        stream = data[0x1000:0x137000]
+        expected = profile['plain_bytes']
+        # 原机流为“已知大小头、无 EOSM”，FORMAT_ALONE 可解；本机重压缩候选流
+        # 为“已知大小头 + EOSM”，Python 3.14 的 lzma 拒绝该组合，改用数据段 FORMAT_RAW。
+        try:
+            decoder = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+            plain = decoder.decompress(stream, max_length=expected+1)
+            if decoder.eof and len(plain) == expected:
+                return plain
+        except lzma.LZMAError:
+            pass
+        decoder = lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=[
+            {'id':lzma.FILTER_LZMA1,'dict_size':1<<20,'lc':3,'lp':0,'pb':2,
+             'mode':lzma.MODE_NORMAL,'mf':lzma.MF_BT4,'nice_len':64}])
+        plain = decoder.decompress(stream[13:], max_length=expected+1)
+        if len(plain) != expected:
             raise RuntimeError('固件压缩流不完整。')
         return plain
     a, b = unpack(old), unpack(candidate)
@@ -144,7 +160,12 @@ def main():
     lock = None
     try:
         lock = (OUT/'修改版刷入.lock').open('a')
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if sys.platform == 'win32':
+            lock.write('\0'); lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         original, candidate = preflight()
         log('preflight_passed', candidate_sha256=CANDIDATE_SHA, restore_sha256=ORIGINAL_SHA,
             independent_restore_bundle_verified=True, archive_sha256=ARCHIVE_SHA)

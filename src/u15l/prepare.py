@@ -29,12 +29,19 @@ def patch(blob,profile=None):
     at=profile.patch_offset;replacement=bytes.fromhex(profile.patch_replacement_hex)
     if len(replacement)!=len(bytes.fromhex(profile.patch_original_hex)):raise RuntimeError('补丁指令长度不匹配。')
     patched[at:at+len(replacement)]=replacement
-    packed=lzma.compress(bytes(patched),format=lzma.FORMAT_ALONE,filters=[{
-        'id':lzma.FILTER_LZMA1,'dict_size':1<<20,'lc':3,'lp':0,'pb':2,
-        'mode':lzma.MODE_NORMAL,'mf':lzma.MF_BT4,'nice_len':64}])
-    packed=header+packed[13:]
-    if len(packed)>0x136000 or lzma.decompress(packed,format=lzma.FORMAT_ALONE)!=patched:
-        raise RuntimeError('重压缩大小或校验失败。')
+    filters=[{'id':lzma.FILTER_LZMA1,'dict_size':1<<20,'lc':3,'lp':0,'pb':2,
+              'mode':lzma.MODE_NORMAL,'mf':lzma.MF_BT4,'nice_len':64}]
+    compressed=lzma.compress(bytes(patched),format=lzma.FORMAT_ALONE,filters=filters)
+    # Python 3.14 的 lzma 拒绝“已知大小头+EOSM 数据”的组合；分别校验两端即可：
+    # 压缩流自身用 FORMAT_ALONE，换头后的数据段用 FORMAT_RAW。
+    if lzma.decompress(compressed,format=lzma.FORMAT_ALONE)!=patched:
+        raise RuntimeError('重压缩数据校验失败。')
+    packed=header+compressed[13:]
+    if len(packed)>0x136000:
+        raise RuntimeError('重压缩后大小超出窗口。')
+    decoder=lzma.LZMADecompressor(format=lzma.FORMAT_RAW,filters=filters)
+    if decoder.decompress(compressed[13:],max_length=len(patched)+1)!=patched:
+        raise RuntimeError('换头后数据校验失败。')
     candidate=bytearray(blob);candidate[0x481000:0x5b7000]=packed+bytes(0x136000-len(packed))
     if candidate[:0x481000]!=blob[:0x481000] or candidate[0x5b7000:]!=blob[0x5b7000:]:raise RuntimeError('越界修改。')
     return bytes(candidate),bytes(patched),plain

@@ -18,7 +18,7 @@ SOURCE_SHA='__SOURCE_SHA__'
 def sha(b):return hashlib.sha256(b).hexdigest()
 
 @contextmanager
-def session(log,phase,policy,expected_port=None):
+def session(log,phase,policy,expected_port=None,already_present=False,held_dev=None):
     import libusb_package
     import usb.core
     import usb.util
@@ -29,30 +29,37 @@ def session(log,phase,policy,expected_port=None):
         ds=list(usb.core.find(find_all=True,backend=backend,idVendor=0x2ecc,idProduct=0x3001))
         if len(ds)>1:raise RuntimeError('发现多台启动设备，已停止。')
         return ds
-    print(f'\n{phase}：程序已就绪。请拔下设备，等 3 秒，再插回同一接口。',flush=True)
-    print('不要按复位键。按本窗口提示操作，保持连接直到本阶段结束。',flush=True)
+    if not already_present:
+        print(f'\n{phase}：程序已就绪。请拔下设备，等 3 秒，再插回同一接口。',flush=True)
+        print('不要按复位键。按本窗口提示操作，保持连接直到本阶段结束。',flush=True)
+    else:
+        print(f'\n{phase}：程序已就绪。设备已在下载模式，立即捕获。',flush=True)
     deadline=time.monotonic()+180;dev=None;claimed=False
     try:
-        while find():
-            if time.monotonic()>deadline:raise RuntimeError('等待拔插超时。')
-            time.sleep(.05)
-        while time.monotonic()<deadline:
-            ds=find()
-            if not ds:time.sleep(.05);continue
-            dev=ds[0]
-            try:
-                if dev.product!='WUKONG':raise RuntimeError('USB 设备名不符。')
-                try:cfg=dev.get_active_configuration()
+        if held_dev is not None:
+            dev=held_dev;claimed=True
+        else:
+            if not already_present:
+                while find():
+                    if time.monotonic()>deadline:raise RuntimeError('等待拔插超时。')
+                    time.sleep(.05)
+            while time.monotonic()<deadline:
+                ds=find()
+                if not ds:time.sleep(.05);continue
+                dev=ds[0]
+                try:
+                    if dev.product!='WUKONG':raise RuntimeError('USB 设备名不符。')
+                    try:cfg=dev.get_active_configuration()
+                    except usb.core.USBError as exc:
+                        if 'Configuration not set' not in str(exc):raise
+                        dev.set_configuration(1);cfg=dev.get_active_configuration()
+                    itf=cfg[(0,0)]
+                    if cfg.bConfigurationValue!=1 or sorted((e.bEndpointAddress,e.bmAttributes&3,e.wMaxPacketSize) for e in itf)!=[(2,2,512),(129,2,512)]:
+                        raise RuntimeError('USB 接口布局不符。')
+                    usb.util.claim_interface(dev,0);claimed=True;break
                 except usb.core.USBError as exc:
-                    if 'Configuration not set' not in str(exc):raise
-                    dev.set_configuration(1);cfg=dev.get_active_configuration()
-                itf=cfg[(0,0)]
-                if cfg.bConfigurationValue!=1 or sorted((e.bEndpointAddress,e.bmAttributes&3,e.wMaxPacketSize) for e in itf)!=[(2,2,512),(129,2,512)]:
-                    raise RuntimeError('USB 接口布局不符。')
-                usb.util.claim_interface(dev,0);claimed=True;break
-            except usb.core.USBError as exc:
-                log('open_retry',error=str(exc));usb.util.dispose_resources(dev);dev=None;time.sleep(.05)
-        if not claimed:raise RuntimeError('捕获启动接口超时。')
+                    log('open_retry',error=str(exc));usb.util.dispose_resources(dev);dev=None;time.sleep(.05)
+            if not claimed:raise RuntimeError('捕获启动接口超时。')
         port=(dev.bus,tuple(dev.port_numbers or ()))
         if expected_port is not None and expected_port!=port:raise RuntimeError('USB 物理端口变化，已停止。')
         log('usb_session',phase=phase,physical_port=port)

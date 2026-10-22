@@ -6,8 +6,10 @@ PACKAGES=('pyusb==1.3.1','libusb-package==1.0.30.0')
 ADAPTER='# Standard-library adapter for libusb-package on Python 3.9+.\nfrom importlib.resources import files, as_file\n'
 
 def build(root=ROOT,wheelhouse=None):
-    if platform.system()!='Darwin' or platform.machine()!='arm64':
-        raise RuntimeError('硬件流程仅在 macOS / Apple Silicon 验证。')
+    tested=platform.system()=='Darwin' and platform.machine()=='arm64'
+    if not tested:
+        print('注意：本机为 %s / %s。此硬件流程仅在 macOS / Apple Silicon 验证；' % (platform.system(),platform.machine()),file=sys.stderr)
+        print('其他平台可自行尝试，但不在作者验证范围内。',file=sys.stderr)
     if sys.version_info<(3,9):raise RuntimeError('需要 Python 3.9 或更新版本。')
     target=root/'runtime'
     if target.exists():raise RuntimeError('runtime 已存在；先运行 ./run.sh doctor，不覆盖现有环境。')
